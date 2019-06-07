@@ -381,8 +381,21 @@ func (k *Kernel) SaveTo(w io.Writer) error {
 // flushMountSourceRefs flushes the MountSources for all mounted filesystems
 // and open FDs.
 func (k *Kernel) flushMountSourceRefs() error {
-	// Flush all mount sources for currently mounted filesystems.
+	// Flush all mount sources for currently mounted filesystems in the
+	// root mount namespace.
 	k.mounts.FlushMountSourceRefs()
+
+	// Some tasks may have other mount namespaces; flush those as well.
+	k.tasks.mu.RLock()
+	k.tasks.forEachThreadGroupLocked(func(tg *ThreadGroup) {
+		if tg.Leader().mounts == k.mounts {
+			// There is no harm in flushing multiple times, but we
+			// might as well avoid it in this common case.
+			return
+		}
+		tg.Leader().mounts.FlushMountSourceRefs()
+	})
+	k.tasks.mu.RUnlock()
 
 	// There may be some open FDs whose filesystems have been unmounted. We
 	// must flush those as well.
@@ -611,6 +624,14 @@ type CreateProcessArgs struct {
 	// AbstractSocketNamespace is the initial Abstract Socket namespace.
 	AbstractSocketNamespace *AbstractSocketNamespace
 
+	// MountNamespace optionally contains the mount namespace for this
+	// process. If nil, the kernel's mount namespace is used.
+	//
+	// Anyone setting MountNamespace must donate a reference (i.e.
+	// increment it) to keep it alive until it is decremented by
+	// CreateProcess.
+	MountNamespace *fs.MountNamespace
+
 	// Root optionally contains the dirent that serves as the root for the
 	// process. If nil, the mount namespace's root is used as the process'
 	// root.
@@ -718,6 +739,19 @@ func (k *Kernel) CreateProcess(args CreateProcessArgs) (*ThreadGroup, ThreadID, 
 	tg := k.newThreadGroup(k.tasks.Root, NewSignalHandlers(), linux.SIGCHLD, args.Limits, k.monotonicClock)
 	ctx := args.NewContext(k)
 
+	// Grab the mount namespace.
+	mns := args.MountNamespace
+	if mns != nil {
+		// If args contained the MountNamespace, it must have included
+		// a reference that we will donate to the new task.
+		args.MountNamespace = nil
+	} else {
+		// Otherwise use the kernel's root mount namespace, with an
+		// extra reference that will be donated to the task.
+		mns = k.mounts
+		mns.IncRef()
+	}
+
 	// Grab the root directory.
 	root := args.Root
 	if root == nil {
@@ -773,6 +807,7 @@ func (k *Kernel) CreateProcess(args CreateProcessArgs) (*ThreadGroup, ThreadID, 
 		FDMap:                   args.FDMap,
 		Credentials:             args.Credentials,
 		AllowedCPUMask:          sched.NewFullCPUSet(k.applicationCores),
+		MountNamespace:          mns,
 		UTSNamespace:            args.UTSNamespace,
 		IPCNamespace:            args.IPCNamespace,
 		AbstractSocketNamespace: args.AbstractSocketNamespace,

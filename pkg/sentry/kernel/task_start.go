@@ -17,6 +17,7 @@ package kernel
 import (
 	"gvisor.googlesource.com/gvisor/pkg/abi/linux"
 	"gvisor.googlesource.com/gvisor/pkg/sentry/arch"
+	"gvisor.googlesource.com/gvisor/pkg/sentry/fs"
 	"gvisor.googlesource.com/gvisor/pkg/sentry/kernel/auth"
 	"gvisor.googlesource.com/gvisor/pkg/sentry/kernel/futex"
 	"gvisor.googlesource.com/gvisor/pkg/sentry/kernel/sched"
@@ -78,6 +79,9 @@ type TaskConfig struct {
 	// AbstractSocketNamespace is the AbstractSocketNamespace of the new task.
 	AbstractSocketNamespace *AbstractSocketNamespace
 
+	// MountNamespace is the MountNamespace of the new task.
+	MountNamespace *fs.MountNamespace
+
 	// ContainerID is the container the new task belongs to.
 	ContainerID string
 }
@@ -91,6 +95,7 @@ func (ts *TaskSet) NewTask(cfg *TaskConfig) (*Task, error) {
 		cfg.TaskContext.release()
 		cfg.FSContext.DecRef()
 		cfg.FDMap.DecRef()
+		cfg.MountNamespace.DecRef()
 		return nil, err
 	}
 	return t, nil
@@ -125,6 +130,7 @@ func (ts *TaskSet) newTask(cfg *TaskConfig) (*Task, error) {
 		utsns:           cfg.UTSNamespace,
 		ipcns:           cfg.IPCNamespace,
 		abstractSockets: cfg.AbstractSocketNamespace,
+		mounts:          cfg.MountNamespace,
 		rseqCPU:         -1,
 		futexWaiter:     futex.NewWaiter(),
 		containerID:     cfg.ContainerID,
