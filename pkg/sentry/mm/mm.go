@@ -282,6 +282,9 @@ type vma struct {
 	// numaNodemask is the NUMA nodemask for this vma set by mbind().
 	numaNodemask uint64
 
+	// dontfork is the MADV_DONTFORK setting for this vma configured by madvise().
+	dontfork bool
+
 	// If id is not nil, it controls the lifecycle of mappable and provides vma
 	// metadata shown in /proc/[pid]/maps, and the vma holds a reference.
 	id memmap.MappingIdentity

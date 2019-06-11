@@ -86,10 +86,22 @@ func (mm *MemoryManager) Fork(ctx context.Context) (*MemoryManager, error) {
 	}
 
 	// Copy vmas.
+	dontforks := 0
 	dstvgap := mm2.vmas.FirstGap()
 	for srcvseg := mm.vmas.FirstSegment(); srcvseg.Ok(); srcvseg = srcvseg.NextSegment() {
 		vma := srcvseg.Value() // makes a copy of the vma
 		vmaAR := srcvseg.Range()
+
+		if vma.dontfork {
+			length := uint64(vmaAR.Length())
+			mm2.usageAS -= length
+			if vma.isPrivateDataLocked() {
+				mm2.dataAS -= length
+			}
+			dontforks++
+			continue
+		}
+
 		// Inform the Mappable, if any, of the new mapping.
 		if vma.mappable != nil {
 			if err := vma.mappable.AddMapping(ctx, mm2, vmaAR, vma.off, vma.canWriteMappableLocked()); err != nil {
@@ -118,6 +130,10 @@ func (mm *MemoryManager) Fork(ctx context.Context) (*MemoryManager, error) {
 	defer mm2.activeMu.Unlock()
 	mm.activeMu.Lock()
 	defer mm.activeMu.Unlock()
+	if dontforks > 0 {
+		defer mm.pmas.MergeRange(mm.applicationAddrRange())
+	}
+	srcvseg := mm.vmas.FirstSegment()
 	dstpgap := mm2.pmas.FirstGap()
 	var unmapAR usermem.AddrRange
 	for srcpseg := mm.pmas.FirstSegment(); srcpseg.Ok(); srcpseg = srcpseg.NextSegment() {
@@ -125,6 +141,33 @@ func (mm *MemoryManager) Fork(ctx context.Context) (*MemoryManager, error) {
 		if !pma.private {
 			continue
 		}
+
+		if dontforks > 0 {
+			// Find the 'vma' that contains the starting address
+			// associated with the 'pma' (there must be one).
+			for srcvseg.Ok() && !srcvseg.Range().Contains(srcpseg.Start()) {
+				if checkInvariants {
+					// We are always catching up to the pma
+					// from behind so if the vma went past
+					// it then this is wrong.
+					if srcvseg.End() > srcpseg.Start() {
+						panic(fmt.Sprintf("vma %v ran ahead of pma %v", srcvseg.Range(), srcpseg.Range()))
+					}
+				}
+				srcvseg = srcvseg.NextSegment()
+			}
+
+			if !srcvseg.Ok() {
+				panic(fmt.Sprintf("no vma covers pma range %v", srcpseg.Range()))
+			}
+
+			srcpseg = mm.pmas.Isolate(srcpseg, srcvseg.Range())
+			if srcvseg.ValuePtr().dontfork {
+				continue
+			}
+			pma = srcpseg.ValuePtr()
+		}
+
 		if !pma.needCOW {
 			pma.needCOW = true
 			if pma.effectivePerms.Write {
